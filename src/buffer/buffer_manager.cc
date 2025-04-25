@@ -179,4 +179,14 @@ std::vector<uint64_t> BufferManager::get_lru_list() const {
 	return {};
 }
 
-}  // namespace buzzdb
+std::vector<uint64_t> BufferManager::get_dirty_page_ids() {
+	std::vector<uint64_t> dirty_page_ids;
+	for (size_t frame_id = 0; frame_id < capacity_; frame_id++) {
+		if (pool_[frame_id]->dirty == true) {
+			dirty_page_ids.push_back(pool_[frame_id]->page_id);
+		}
+	}
+	return dirty_page_ids;
+}
+
+} // namespace buzzdb

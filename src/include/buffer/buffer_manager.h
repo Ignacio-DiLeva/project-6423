@@ -105,6 +105,8 @@ public:
 
     void  discard_all_pages();
 
+    std::vector<uint64_t> get_dirty_page_ids();
+
     /// Returns the frame id of the frame containing the page if it is
     /// present in the buffer
     /// Otherwise, returns INVALID_FRAME_ID

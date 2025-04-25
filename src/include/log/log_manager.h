@@ -17,7 +17,9 @@ class LogManager {
         COMMIT_RECORD,
         UPDATE_RECORD,
         BEGIN_RECORD,
-        CHECKPOINT_RECORD
+        CHECKPOINT_RECORD,
+        BEGIN_FUZZY_CHECKPOINT_RECORD,
+        END_FUZZY_CHECKPOINT_RECORD,
     };
 
     /// Constructor.
@@ -42,6 +44,15 @@ class LogManager {
     /// Add a log checkpoint record
     void log_checkpoint(BufferManager& buffer_manager);
 
+    /// Add a log fuzzy checkpoint begin record, returns the number of pages to be flushed
+    size_t log_fuzzy_checkpoint_begin(BufferManager& buffer_manager);
+
+    /// Perform a fuzzy checkpoint step by flushing a page (unless it was already flushed). First step is 0.
+    void log_fuzzy_checkpoint_do_step(BufferManager& buffer_manager, size_t step);
+
+    /// Add a log fuzzy checkpoint end record
+    void log_fuzzy_checkpoint_end();
+
     /// recovery
     void recovery(BufferManager& buffer_manager);
 
@@ -58,6 +69,9 @@ class LogManager {
     void reset(File* log_file);
 
    private:
+
+    std::vector<uint64_t> fuzzy_checkpoint_page_ids;
+
     File* log_file_;
 
     // offset in the file

@@ -549,6 +549,152 @@ TEST_F(LogManagerTest, TestOpenCommitCheckpointOpenCrash){
 
 }
 
+/** 
+ * T1 inserts but does not commits
+ * T2 inserts but does not commits
+ * T3 inserts but does not commits
+ * T4 inserts but does not commits
+ * T3 commits
+ * fuzzy checkpoint begin
+ * fuzzy checkpoint do step
+ * T1 commits
+ * T4 inserts but does not commits
+ * T4 inserts but does not commits
+ * fuzzy checkpoint do step
+ * fuzzy checkpoint end
+ * T2 inserts but does not commits
+ * T2 commits
+ * crash
+ * Only T1,T2,T3 data should be there
+*/
+TEST_F(LogManagerTest, TestFuzzyCheckpointCompletesThenCrash){
+	BufferManager buffer_manager(128, 10);
+	auto logfile = buzzdb::File::open_file(LOG_FILE, buzzdb::File::WRITE);
+	LogManager log_manager(logfile.get());
+	HeapSegment heap_segment1(123, log_manager, buffer_manager);
+	HeapSegment heap_segment2(124, log_manager, buffer_manager);
+	TransactionManager transaction_manager(log_manager, buffer_manager);
+	
+	uint64_t table_id1 = 101;
+	uint64_t table_id2 = 102;
+	// T1
+	uint64_t t1 = transaction_manager.start_txn();
+	insert_row(heap_segment1, transaction_manager, t1, table_id1, 5);
+	// T2
+	uint64_t t2 = transaction_manager.start_txn();
+	insert_row(heap_segment2, transaction_manager, t2, table_id2, 4);
+	
+	// T3
+	uint64_t t3 = transaction_manager.start_txn();
+	insert_row(heap_segment2, transaction_manager, t3, table_id2, 3);
+	transaction_manager.commit_txn(t3);
+
+	// T4
+	uint64_t t4 = transaction_manager.start_txn();
+	insert_row(heap_segment1, transaction_manager, t4, table_id1, 9);
+
+	size_t num_dirty = log_manager.log_fuzzy_checkpoint_begin(buffer_manager);
+	EXPECT_TRUE(num_dirty == 2);
+	log_manager.log_fuzzy_checkpoint_do_step(buffer_manager, 0);
+	transaction_manager.commit_txn(t1);
+
+	// T4
+	insert_row(heap_segment1, transaction_manager, t4, table_id1, 10);
+	insert_row(heap_segment2, transaction_manager, t4, table_id2, 11);
+	
+	log_manager.log_fuzzy_checkpoint_do_step(buffer_manager, 1);
+	log_manager.log_fuzzy_checkpoint_end();
+
+	insert_row(heap_segment1, transaction_manager, t2, table_id1, 8);
+
+	transaction_manager.commit_txn(t2);
+
+	EXPECT_EQ(log_manager.get_total_log_records(), 16);
+	EXPECT_EQ(log_manager.get_total_log_records_of_type(LogManager::LogRecordType::BEGIN_RECORD), 4);
+	EXPECT_EQ(log_manager.get_total_log_records_of_type(LogManager::LogRecordType::UPDATE_RECORD), 7);
+	EXPECT_EQ(log_manager.get_total_log_records_of_type(LogManager::LogRecordType::COMMIT_RECORD), 3);
+	EXPECT_EQ(log_manager.get_total_log_records_of_type(LogManager::LogRecordType::BEGIN_FUZZY_CHECKPOINT_RECORD), 1);
+	EXPECT_EQ(log_manager.get_total_log_records_of_type(LogManager::LogRecordType::END_FUZZY_CHECKPOINT_RECORD), 1);
+	EXPECT_EQ(log_manager.get_total_log_records_of_type(LogManager::LogRecordType::CHECKPOINT_RECORD), 0);
+	EXPECT_EQ(log_manager.get_total_log_records_of_type(LogManager::LogRecordType::ABORT_RECORD), 0);
+
+	crash(transaction_manager, buffer_manager, log_manager);
+
+	EXPECT_TRUE(look(heap_segment2, transaction_manager, buffer_manager,
+		table_id2, 3, true));
+	EXPECT_TRUE(look(heap_segment2, transaction_manager, buffer_manager,
+		table_id2, 4, true));
+	EXPECT_TRUE(look(heap_segment1, transaction_manager, buffer_manager,
+			table_id1, 5, true));
+	EXPECT_TRUE(look(heap_segment1, transaction_manager, buffer_manager,
+		table_id1, 8, true));
+	EXPECT_TRUE(look(heap_segment1, transaction_manager, buffer_manager,
+			table_id1, 9, false));
+	EXPECT_TRUE(look(heap_segment1, transaction_manager, buffer_manager,
+		table_id1, 10, false));
+	EXPECT_TRUE(look(heap_segment2, transaction_manager, buffer_manager,
+			table_id2, 11, false));
+
+}
+
+/** 
+ * T1 inserts and commits
+ * T2 inserts but does not commits
+ * T3 inserts but does not commits
+ * fuzzy checkpoint begin
+ * T2 inserts but does not commits
+ * T3 inserts but does not commits
+ * T2 commits
+ * T3 inserts but does not commits
+ * crash
+ * Only T1,T2 data should be there
+*/
+TEST_F(LogManagerTest, TestFuzzyCheckpointCrashDuringCheckpointing){
+	BufferManager buffer_manager(128, 10);
+	auto logfile = buzzdb::File::open_file(LOG_FILE, buzzdb::File::WRITE);
+	LogManager log_manager(logfile.get());
+	HeapSegment heap_segment(123, log_manager, buffer_manager);
+	TransactionManager transaction_manager(log_manager, buffer_manager);
+	
+	uint64_t table_id = 101;
+	// T1
+	do_insert(heap_segment, transaction_manager, buffer_manager, table_id, 1, 2);
+	// T2
+	uint64_t t2 = transaction_manager.start_txn();
+	insert_row(heap_segment, transaction_manager, t2, table_id, 3);
+	
+	// T3
+	uint64_t t3 = transaction_manager.start_txn();
+	insert_row(heap_segment, transaction_manager, t3, table_id, 4);
+	
+	EXPECT_EQ(log_manager.log_fuzzy_checkpoint_begin(buffer_manager), 1);
+
+	insert_row(heap_segment, transaction_manager, t2, table_id, 5);
+	insert_row(heap_segment, transaction_manager, t3, table_id, 6);
+
+	transaction_manager.commit_txn(t2);
+
+	insert_row(heap_segment, transaction_manager, t3, table_id, 7);
+
+	crash(transaction_manager, buffer_manager, log_manager);
+
+	EXPECT_TRUE(look(heap_segment, transaction_manager, buffer_manager,
+		table_id, 1, true));
+	EXPECT_TRUE(look(heap_segment, transaction_manager, buffer_manager,
+		table_id, 2, true));
+	EXPECT_TRUE(look(heap_segment, transaction_manager, buffer_manager,
+			table_id, 3, true));
+	EXPECT_TRUE(look(heap_segment, transaction_manager, buffer_manager,
+		table_id, 4, false));
+	EXPECT_TRUE(look(heap_segment, transaction_manager, buffer_manager,
+			table_id, 5, true));
+	EXPECT_TRUE(look(heap_segment, transaction_manager, buffer_manager,
+		table_id, 6, false));
+	EXPECT_TRUE(look(heap_segment, transaction_manager, buffer_manager,
+			table_id, 7, false));
+
+}
+
 }  // namespace
 int main(int argc, char* argv[]) {
 	testing::InitGoogleTest(&argc, argv);
